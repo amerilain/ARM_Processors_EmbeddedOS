@@ -1,0 +1,13 @@
+# Build directories
+cmake-build-debug/
+cmake-build-release/
+
+# CLion specific files
+.idea/
+
+# Temporary files
+*.tmp
+*.log
+
+# MacOS specific files
+.DS_Store
