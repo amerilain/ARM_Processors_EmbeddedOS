@@ -10,38 +10,69 @@ uint32_t read_runtime_ctr(void) {
 }
 }
 
-#define BUTTON_SW0_PIN 9
-#define BUTTON_SW1_PIN 8
-#define BUTTON_SW2_PIN 7
-#define LED_PIN 22  // D1
+// Constants
+const uint LED_PIN = 21;
+const uint DEBOUNCE_DELAY_MS = 20;
+const uint QUEUE_SIZE = 20;
+const uint POLL_DELAY_MS = 10;
 
-QueueHandle_t buttonQueue;
-
-// Sequence to unlock the lock
+// Unlock sequence (0-0-2-1-2)
 const uint8_t unlockSequence[] = {0, 0, 2, 1, 2};
 const size_t unlockSequenceLength = sizeof(unlockSequence) / sizeof(unlockSequence[0]);
 
-void button_task(void *param) {
-    const uint8_t buttonId = *(uint8_t *)param;
-    const uint button_pin = (buttonId == 0) ? BUTTON_SW0_PIN :
-                            (buttonId == 1) ? BUTTON_SW1_PIN :
-                            BUTTON_SW2_PIN;
+QueueHandle_t buttonQueue;
 
-    gpio_init(button_pin);
-    gpio_set_dir(button_pin, GPIO_IN);
-    gpio_pull_up(button_pin);
+class Button {
+public:
+    Button(uint8_t id, uint pin) : buttonId(id), buttonPin(pin) {
+        gpio_init(buttonPin);
+        gpio_set_dir(buttonPin, GPIO_IN);
+        gpio_pull_up(buttonPin);
+    }
+
+    bool isPressed() {
+        return !gpio_get(buttonPin);  // Active low
+    }
+
+    uint8_t getId() const {
+        return buttonId;
+    }
+
+    bool debounce() {
+        if (isPressed()) {
+            vTaskDelay(pdMS_TO_TICKS(DEBOUNCE_DELAY_MS));  // Debounce delay
+            if (isPressed()) {  // Confirm button is still pressed
+                return true;
+            }
+        }
+        return false;
+    }
+
+private:
+    uint8_t buttonId;
+    uint buttonPin;
+};
+
+void button_task(void *param) {
+    Button *button = (Button *)param;
 
     while (true) {
-        if (!gpio_get(button_pin)) {  // Button pressed (active low)
-            printf("Button %d pressed\n", buttonId);
-            while (!gpio_get(button_pin)) {
-                vTaskDelay(pdMS_TO_TICKS(10));  // Debounce delay
+        // Wait for button press and debounce
+        if (button->debounce()) {  // If button press is confirmed after debouncing
+            printf("Button %d pressed\n", button->getId());
+            // release button
+            while (button->isPressed()) {
+                vTaskDelay(pdMS_TO_TICKS(POLL_DELAY_MS));  // Poll to check for release
             }
+
+            // send the button press event to the queue
+            uint8_t buttonId = button->getId();
             if (xQueueSend(buttonQueue, &buttonId, portMAX_DELAY) != pdPASS) {
                 printf("Failed to send button press to queue\n");
             }
         }
-        vTaskDelay(pdMS_TO_TICKS(100));  // Poll every 100ms
+
+        vTaskDelay(pdMS_TO_TICKS(POLL_DELAY_MS));
     }
 }
 
@@ -52,38 +83,40 @@ void sequence_task(void *param) {
 
     gpio_init(LED_PIN);
     gpio_set_dir(LED_PIN, GPIO_OUT);
-    gpio_put(LED_PIN, 0);  // Set LED off initially
+    gpio_put(LED_PIN, 0);  // Set LED off
 
     while (true) {
         if (xQueueReceive(buttonQueue, &receivedButton, pdMS_TO_TICKS(5000)) == pdPASS) {
-            sequenceStarted = true;  // Sequence started
+            sequenceStarted = true;
             printf("Received button %d\n", receivedButton);
+
             if (receivedButton == unlockSequence[sequenceIndex]) {
                 sequenceIndex++;
-                printf("Correct button! Sequence index: %d\n", sequenceIndex);
+                printf("Correct button! Sequence index: %zu\n", sequenceIndex);
+
                 if (sequenceIndex == unlockSequenceLength) {
-                    // Sequence completed successfully
+                    // Sequence completed successfully, unlock and blink LED
                     printf("Sequence complete! Unlocking...\n");
                     for (int i = 0; i < 3; i++) {
-                        printf("Blinking LED: %d\n", i+1);
                         gpio_put(LED_PIN, 1);
                         vTaskDelay(pdMS_TO_TICKS(200));
                         gpio_put(LED_PIN, 0);
                         vTaskDelay(pdMS_TO_TICKS(200));
                     }
-                    sequenceIndex = 0;
+                    sequenceIndex = 0;  // Reset sequence
                     sequenceStarted = false;
                 }
             } else {
+                // Wrong button, reset sequence
                 printf("Wrong button! Resetting sequence.\n");
-                sequenceIndex = 0;  // Reset if wrong button is pressed
-                sequenceStarted = false;  // Reset sequence started flag
+                sequenceIndex = 0;
+                sequenceStarted = false;
             }
         } else if (sequenceStarted) {
-            // Timeout occurred after sequence started
+            // Timeout occurred after sequence started, reset sequence
             printf("Timeout! Resetting sequence.\n");
             sequenceIndex = 0;
-            sequenceStarted = false;  // Reset sequence started flag
+            sequenceStarted = false;
         }
     }
 }
@@ -91,27 +124,27 @@ void sequence_task(void *param) {
 int main() {
     stdio_init_all();
 
-    // Create the queue with space for 10 uint8_t items
-    buttonQueue = xQueueCreate(10, sizeof(uint8_t));
+    // Create the queue with space for 20 uint8_t items
+    buttonQueue = xQueueCreate(QUEUE_SIZE, sizeof(uint8_t));
     if (buttonQueue == NULL) {
-        printf("Failed to create queue\n");
-        while (1);  // stop if queue creation fails
+        printf("Failed to create buttonQueue\n");
+        while (1);
     }
 
-    // Define button IDs
-    const uint8_t button0Id = 0;  // SW0
-    const uint8_t button1Id = 1;  // SW1
-    const uint8_t button2Id = 2;  // SW2
+    // Define buttons
+    static Button button0(0, 9);  // SW0
+    static Button button1(1, 8);  // SW1
+    static Button button2(2, 7);  // SW2
 
-    // Create tasks for each button
-    xTaskCreate(button_task, "Button_SW0", 256, (void *)&button0Id, tskIDLE_PRIORITY + 1, NULL);
-    xTaskCreate(button_task, "Button_SW1", 256, (void *)&button1Id, tskIDLE_PRIORITY + 1, NULL);
-    xTaskCreate(button_task, "Button_SW2", 256, (void *)&button2Id, tskIDLE_PRIORITY + 1, NULL);
+    // tasks for each button
+    xTaskCreate(button_task, "Button_SW0", 256, (void *)&button0, tskIDLE_PRIORITY + 3, NULL);
+    xTaskCreate(button_task, "Button_SW1", 256, (void *)&button1, tskIDLE_PRIORITY + 3, NULL);
+    xTaskCreate(button_task, "Button_SW2", 256, (void *)&button2, tskIDLE_PRIORITY + 3, NULL);
 
-    // Create the sequence processing task
+    // sequence processing task
     xTaskCreate(sequence_task, "Sequence", 256, NULL, tskIDLE_PRIORITY + 2, NULL);
 
-    vTaskStartScheduler();
+    vTaskStartScheduler();  //FreeRTOS scheduler
 
-    while(1){};
+    while (1) {}
 }
