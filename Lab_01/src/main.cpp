@@ -6,14 +6,14 @@
 
 extern "C" {
 uint32_t read_runtime_ctr(void) {
-    return timer_hw->timerawl;  // Use hardware timer for runtime stats
+    return timer_hw->timerawl;
 }
 }
 
 #define BUTTON_SW0_PIN 9
 #define BUTTON_SW1_PIN 8
 #define BUTTON_SW2_PIN 7
-#define LED_PIN 22  // D1 (Pin 22) for unlocking indication
+#define LED_PIN 22  // D1
 
 QueueHandle_t buttonQueue;
 
@@ -32,13 +32,13 @@ void button_task(void *param) {
     gpio_pull_up(button_pin);
 
     while (true) {
-        if (!gpio_get(button_pin)) {  // Button pressed (assuming active low)
+        if (!gpio_get(button_pin)) {  // Button pressed (active low)
             printf("Button %d pressed\n", buttonId);
-            if (xQueueSend(buttonQueue, &buttonId, portMAX_DELAY) != pdPASS) {
-                printf("Failed to send button press to queue\n");
-            }
             while (!gpio_get(button_pin)) {
                 vTaskDelay(pdMS_TO_TICKS(10));  // Debounce delay
+            }
+            if (xQueueSend(buttonQueue, &buttonId, portMAX_DELAY) != pdPASS) {
+                printf("Failed to send button press to queue\n");
             }
         }
         vTaskDelay(pdMS_TO_TICKS(100));  // Poll every 100ms
@@ -48,25 +48,15 @@ void button_task(void *param) {
 void sequence_task(void *param) {
     uint8_t receivedButton;
     size_t sequenceIndex = 0;
-    TickType_t lastReceivedTime = 0;  // Track the time of the last button press
-    TickType_t currentTime;
+    bool sequenceStarted = false;
 
     gpio_init(LED_PIN);
     gpio_set_dir(LED_PIN, GPIO_OUT);
-    gpio_put(LED_PIN, 0);  // Ensure LED is off initially
+    gpio_put(LED_PIN, 0);  // Set LED off initially
 
     while (true) {
-        if (xQueueReceive(buttonQueue, &receivedButton, portMAX_DELAY) == pdPASS) {
-            currentTime = xTaskGetTickCount();
-
-            if ((currentTime - lastReceivedTime) > pdMS_TO_TICKS(5000)) {
-                // If more than 5 seconds have passed, reset the sequence
-                printf("Timeout! Resetting sequence.\n");
-                sequenceIndex = 0;
-            }
-
-            lastReceivedTime = currentTime;  // Update the last received time
-
+        if (xQueueReceive(buttonQueue, &receivedButton, pdMS_TO_TICKS(5000)) == pdPASS) {
+            sequenceStarted = true;  // Sequence started
             printf("Received button %d\n", receivedButton);
             if (receivedButton == unlockSequence[sequenceIndex]) {
                 sequenceIndex++;
@@ -81,27 +71,34 @@ void sequence_task(void *param) {
                         gpio_put(LED_PIN, 0);
                         vTaskDelay(pdMS_TO_TICKS(200));
                     }
-                    sequenceIndex = 0;  // Reset for the next attempt
+                    sequenceIndex = 0;
+                    sequenceStarted = false;
                 }
             } else {
                 printf("Wrong button! Resetting sequence.\n");
                 sequenceIndex = 0;  // Reset if wrong button is pressed
+                sequenceStarted = false;  // Reset sequence started flag
             }
+        } else if (sequenceStarted) {
+            // Timeout occurred after sequence started
+            printf("Timeout! Resetting sequence.\n");
+            sequenceIndex = 0;
+            sequenceStarted = false;  // Reset sequence started flag
         }
     }
 }
 
 int main() {
-    stdio_init_all();  // Initialize standard I/O (for printf)
+    stdio_init_all();
 
     // Create the queue with space for 10 uint8_t items
     buttonQueue = xQueueCreate(10, sizeof(uint8_t));
     if (buttonQueue == NULL) {
         printf("Failed to create queue\n");
-        while (1);  // Halt if the queue creation fails
+        while (1);  // stop if queue creation fails
     }
 
-    // Define button IDs corresponding to their sequence positions
+    // Define button IDs
     const uint8_t button0Id = 0;  // SW0
     const uint8_t button1Id = 1;  // SW1
     const uint8_t button2Id = 2;  // SW2
