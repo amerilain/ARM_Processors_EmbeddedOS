@@ -4,7 +4,7 @@ cmake_minimum_required(VERSION 3.12)
 SET(ProjectName rp2040-freertos-cpp-template)
 
 # Set any variables required for importing libraries
-SET(FREERTOS_KERNEL_PATH ${CMAKE_CURRENT_SOURCE_DIR}/lib/FreeRTOS-Kernel)
+SET(FREERTOS_KERNEL_PATH ${CMAKE_CURRENT_SOURCE_DIR}/FreeRTOS-KernelV10.6.2)
 
 # Import those libraries
 include($ENV{PICO_SDK_PATH}/external/pico_sdk_import.cmake)
@@ -22,3 +22,4 @@ add_subdirectory(src)
 # if you have anything in "lib" folder then uncomment below - remember to add a CMakeLists.txt
 # file to the "lib" directory
 #add_subdirectory(lib)
+
