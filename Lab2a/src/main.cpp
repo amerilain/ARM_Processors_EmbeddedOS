@@ -11,28 +11,24 @@ uint32_t read_runtime_ctr(void) {
 }
 }
 
-// Define the LED pin
 #define LED_PIN 21
-#define UART_TIMEOUT 10000       // Microseconds
-#define DEBOUNCE_DELAY_MS 200    // Time to wait after the last character before blinking
+#define UART_TIMEOUT 10000
+#define DEBOUNCE_DELAY_MS 200
 
-// Binary semaphore handle
-SemaphoreHandle_t xBinarySemaphore;
+SemaphoreHandle_t xSemaphore;
 
-// Task to read serial input and give semaphore to blinker task
 void vSerialTask(void *pvParameters) {
     int c;
     while (1) {
-        c = getchar_timeout_us(UART_TIMEOUT);  // Get character with timeout
+        c = getchar_timeout_us(UART_TIMEOUT);
         if (c != PICO_ERROR_TIMEOUT) {
-            putchar(c);  // Echo the character back to the serial port
-            xSemaphoreGive(xBinarySemaphore);  // Notify blinker task
+            putchar(c);  // Echo character back to the serial port
+            xSemaphoreGive(xSemaphore);  // give semaphore to blinker task
         }
-        vTaskDelay(pdMS_TO_TICKS(10));  // Small delay to prevent busy loop
+        vTaskDelay(pdMS_TO_TICKS(10));
     }
 }
 
-// Task to blink the LED once after the last character is received
 void vBlinkTask(void *pvParameters) {
     gpio_init(LED_PIN);
     gpio_set_dir(LED_PIN, GPIO_OUT);
@@ -42,50 +38,41 @@ void vBlinkTask(void *pvParameters) {
 
     while (1) {
         // Wait for semaphore
-        if (xSemaphoreTake(xBinarySemaphore, portMAX_DELAY)) {
-            // Record the time of the last character received
+        if (xSemaphoreTake(xSemaphore, portMAX_DELAY)) {
             lastBlinkTime = xTaskGetTickCount();
 
-            // Wait for debounce period to ensure no more characters are coming
+            // Wait for more characters
             while ((xTaskGetTickCount() - lastBlinkTime) < debounceDelay) {
-                // Check if another character has been received
-                if (xSemaphoreTake(xBinarySemaphore, pdMS_TO_TICKS(DEBOUNCE_DELAY_MS))) {
-                    // Update the lastBlinkTime if another character is received
+                // Check for another character
+                if (xSemaphoreTake(xSemaphore, pdMS_TO_TICKS(DEBOUNCE_DELAY_MS))) {
                     lastBlinkTime = xTaskGetTickCount();
                 } else {
-                    break;  // Exit the loop if no more characters are received
+                    break;
                 }
             }
 
-            // Perform the blink once after the last character
             gpio_put(LED_PIN, 1);
-            vTaskDelay(pdMS_TO_TICKS(100));  // 100 ms on
+            vTaskDelay(pdMS_TO_TICKS(100));
             gpio_put(LED_PIN, 0);
-            vTaskDelay(pdMS_TO_TICKS(100));  // 100 ms off
+            vTaskDelay(pdMS_TO_TICKS(100));
         }
     }
 }
 
 int main() {
-    // Initialize stdio (required for serial port)
     stdio_init_all();
 
-    // Create binary semaphore
-    xBinarySemaphore = xSemaphoreCreateBinary();
+    xSemaphore = xSemaphoreCreateBinary();
 
-    // Check if semaphore was created successfully
-    if (xBinarySemaphore == NULL) {
+    if (xSemaphore == NULL) {
         printf("Failed to create binary semaphore.\n");
         while (1);
     }
 
-    // Create tasks
     xTaskCreate(vSerialTask, "SerialTask", 256, NULL, 1, NULL);
     xTaskCreate(vBlinkTask, "BlinkTask", 256, NULL, 1, NULL);
 
-    // Start the scheduler
     vTaskStartScheduler();
 
-    // Should never reach here
     while (1);
 }
