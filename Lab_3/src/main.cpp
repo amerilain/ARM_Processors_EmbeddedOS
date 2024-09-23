@@ -14,7 +14,7 @@ uint32_t read_runtime_ctr(void) {
 }
 }
 
-#define GREEN_LED_PIN 21
+#define LED_PIN 21
 #define UART_TX_PIN 0
 #define UART_RX_PIN 1
 #define UART_BAUD_RATE 115200
@@ -25,12 +25,12 @@ TimerHandle_t ledToggleTimer;
 static char rxBuffer[128];
 static int bufferIndex = 0;
 static int ledToggleInterval = 5000; // Default to 5 seconds
-static TickType_t lastToggleTime = 0; // For the 'time' command
+static TickType_t lastToggleTime = 0; // For 'time' command
 
 PicoOsUart myUart(0, UART_TX_PIN, UART_RX_PIN, UART_BAUD_RATE);
 
 void vToggleTimerCallback(TimerHandle_t xTimer) {
-    gpio_xor_mask(1u << GREEN_LED_PIN); // Toggle LED
+    gpio_xor_mask(1u << LED_PIN); // Toggle LED
     myUart.send("LED toggled\n");
     lastToggleTime = xTaskGetTickCount();
 }
@@ -43,7 +43,8 @@ void vInactivityTimerCallback(TimerHandle_t xTimer) {
 
 void processCommand(PicoOsUart* uart, const char* command) {
     char outputBuffer[256];
-    printf("Processing command: %s\n", command);  // Debug print
+    snprintf(outputBuffer, sizeof(outputBuffer), "Processing command: %s\n", command);
+    uart->send(outputBuffer);  // Use UART instead of printf
 
     if (strcmp(command, "help") == 0) {
         const char* helpMessage =
@@ -143,8 +144,8 @@ void uartTask(void* pvParameters) {
 
 int main() {
     // Initialize GPIO for LED
-    gpio_init(GREEN_LED_PIN);
-    gpio_set_dir(GREEN_LED_PIN, GPIO_OUT);
+    gpio_init(LED_PIN);
+    gpio_set_dir(LED_PIN, GPIO_OUT);
 
     // Create LED toggle timer
     ledToggleTimer = xTimerCreate("LED Timer", pdMS_TO_TICKS(ledToggleInterval), pdTRUE, 0, vToggleTimerCallback);
