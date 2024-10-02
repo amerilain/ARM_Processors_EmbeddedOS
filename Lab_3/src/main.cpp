@@ -1,12 +1,11 @@
 #include <FreeRTOS.h>
 #include <task.h>
 #include <timers.h>
-#include <stdio.h>
-#include <string.h>
+#include <cstdio>
+#include <cstring>
 #include "PicoOsUart.h"
 #include "hardware/gpio.h"
 #include "hardware/timer.h"
-#include "pico/stdlib.h"
 
 extern "C" {
 uint32_t read_runtime_ctr(void) {
@@ -29,13 +28,15 @@ static TickType_t lastToggleTime = 0; // For 'time' command
 
 PicoOsUart myUart(0, UART_TX_PIN, UART_RX_PIN, UART_BAUD_RATE);
 
-void vToggleTimerCallback(TimerHandle_t xTimer) {
-    gpio_xor_mask(1u << LED_PIN); // Toggle LED
+// toggle LED and send message
+void vToggleTimerCallback(TimerHandle_t) {
+    bool currentState = gpio_get(LED_PIN);
+    gpio_put(LED_PIN, !currentState);
     myUart.send("LED toggled\n");
     lastToggleTime = xTaskGetTickCount();
 }
 
-void vInactivityTimerCallback(TimerHandle_t xTimer) {
+void vInactivityTimerCallback(TimerHandle_t) {
     myUart.send("[Inactive]\n");
     bufferIndex = 0;
     memset(rxBuffer, 0, sizeof(rxBuffer));  // Clear buffer
@@ -44,7 +45,7 @@ void vInactivityTimerCallback(TimerHandle_t xTimer) {
 void processCommand(PicoOsUart* uart, const char* command) {
     char outputBuffer[256];
     snprintf(outputBuffer, sizeof(outputBuffer), "Processing command: %s\n", command);
-    uart->send(outputBuffer);  // Use UART instead of printf
+    uart->send(outputBuffer);  // Use UART
 
     if (strcmp(command, "help") == 0) {
         const char* helpMessage =
@@ -54,13 +55,13 @@ void processCommand(PicoOsUart* uart, const char* command) {
                 "time - show time since last LED toggle\n";
         uart->send(helpMessage);
     } else if (strncmp(command, "interval", 8) == 0) {
-        int interval = atoi(command + 9) * 1000;
+        float interval = atof(command + 9) * 1000;
         if (interval > 0) {
             ledToggleInterval = interval;
             if (xTimerChangePeriod(ledToggleTimer, pdMS_TO_TICKS(ledToggleInterval), portMAX_DELAY) != pdPASS) {
                 uart->send("Failed to change LED timer period\n");
             } else {
-                snprintf(outputBuffer, sizeof(outputBuffer), "LED toggle interval set to %d seconds.\n", interval / 1000);
+                snprintf(outputBuffer, sizeof(outputBuffer), "LED toggle interval set to %.2f seconds.\n", interval / 1000);
                 uart->send(outputBuffer);
             }
         } else {
@@ -81,64 +82,41 @@ void processCommand(PicoOsUart* uart, const char* command) {
     bufferIndex = 0;
 }
 
-// UART receive handler using the PicoOsUart instance
+// UART receive handler
 void uartReceiveHandler(PicoOsUart* uart) {
     uint8_t c;
-    int bytesRead;
 
-    while ((bytesRead = uart->read(&c, 1, 0)) > 0) {
-        if (xTimerReset(inactivityTimer, portMAX_DELAY) != pdPASS) {
-            if (xTimerStart(inactivityTimer, portMAX_DELAY) != pdPASS) {
-                uart->send("Failed to reset inactivity timer\n");
-            }
-        }
+    while (uart->read(&c, 1, 10) > 0) {
+        // Reset inactivity timer
+        xTimerReset(inactivityTimer, portMAX_DELAY);
 
-        if (c >= 32 && c <= 126) {
-            // Echo back
-            uart->write(&c, 1);
+        if (c >= 32 && c <= 126) {  // Printable characters
+            uart->write(&c, 1);  // Echo back
 
             if (bufferIndex < sizeof(rxBuffer) - 1) {
-                // Add to buffer
-                rxBuffer[bufferIndex++] = c;
+                rxBuffer[bufferIndex++] = c;  // Add to buffer
             } else {
-                // Buffer overflow
                 uart->send("\r\nBuffer overflow\r\n");
-                bufferIndex = 0;
-                memset(rxBuffer, 0, sizeof(rxBuffer));
+                bufferIndex = 0;  // Reset buffer
             }
-        } else if (c == '\r' || c == '\n') {
-            // Echo newline characters
-            uart->send("\r\n");
+        } else if (c == '\r' || c == '\n') {  // Newline or carriage return
+            uart->send("\r\n");  // Echo newline
 
-            // Null-terminate and process the command
-            rxBuffer[bufferIndex] = '\0';
-            processCommand(uart, rxBuffer);
+            rxBuffer[bufferIndex] = '\0';  // Null-terminate
+            processCommand(uart, rxBuffer);  // Process command
 
-            // Reset buffer
-            bufferIndex = 0;
-            memset(rxBuffer, 0, sizeof(rxBuffer));
-        } else if (c == 8 || c == 127) {  // Backspace or DEL
-            if (bufferIndex > 0) {
-                // Move cursor back, overwrite character, and move back again
-                uart->send("\b \b");
-
-                // Remove character from buffer
-                bufferIndex--;
-            }
-            // If bufferIndex is zero, do nothing (no characters to delete)
-        } else {
-            // Ignore other control characters
+            bufferIndex = 0;  // Reset buffer
         }
     }
 }
 
 // FreeRTOS task to handle UART
 void uartTask(void* pvParameters) {
-    PicoOsUart* uart = static_cast<PicoOsUart*>(pvParameters);
+    auto* uart = static_cast<PicoOsUart*>(pvParameters);
 
     for (;;) {
         uartReceiveHandler(uart);  // Continuously handle UART reception
-        vTaskDelay(pdMS_TO_TICKS(10));  // Adjust delay as needed
+        //vTaskDelay(pdMS_TO_TICKS(10));
     }
 }
 
@@ -147,39 +125,22 @@ int main() {
     gpio_init(LED_PIN);
     gpio_set_dir(LED_PIN, GPIO_OUT);
 
-    // Create LED toggle timer
-    ledToggleTimer = xTimerCreate("LED Timer", pdMS_TO_TICKS(ledToggleInterval), pdTRUE, 0, vToggleTimerCallback);
-    if (ledToggleTimer == NULL) {
-        // Handle error: Timer creation failed
-        myUart.send("Failed to create LED toggle timer\n");
-    } else {
-        if (xTimerStart(ledToggleTimer, 0) != pdPASS) {
-            // Handle error: Timer start failed
-            myUart.send("Failed to start LED toggle timer\n");
-        }
+    // create two timers
+    ledToggleTimer = xTimerCreate("LED Timer", pdMS_TO_TICKS(ledToggleInterval), pdTRUE, nullptr, vToggleTimerCallback);
+    inactivityTimer = xTimerCreate("Inactivity Timer", pdMS_TO_TICKS(30000), pdTRUE, nullptr, vInactivityTimerCallback);
+
+    // error check
+    if (ledToggleTimer == nullptr || xTimerStart(ledToggleTimer, 0) != pdPASS ||
+        inactivityTimer == nullptr || xTimerStart(inactivityTimer, 0) != pdPASS) {
+        myUart.send("Failed to initialize timers\n");
     }
 
-    // Create inactivity timer as auto-reload
-    inactivityTimer = xTimerCreate("Inactivity Timer", pdMS_TO_TICKS(30000), pdTRUE, 0, vInactivityTimerCallback);
-    if (inactivityTimer == NULL) {
-        // Handle error: Timer creation failed
-        myUart.send("Failed to create inactivity timer\n");
-    } else {
-        if (xTimerStart(inactivityTimer, 0) != pdPASS) {
-            // Handle error: Timer start failed
-            myUart.send("Failed to start inactivity timer\n");
-        }
-    }
-
-    // Create FreeRTOS tasks for UART handling, passing the UART instance
-    if (xTaskCreate(uartTask, "UART Task", configMINIMAL_STACK_SIZE + 256, &myUart, tskIDLE_PRIORITY + 1, NULL) != pdPASS) {
-        // Handle error: Task creation failed
+    // Create UART task
+    if (xTaskCreate(uartTask, "UART Task", configMINIMAL_STACK_SIZE + 256, &myUart, tskIDLE_PRIORITY + 1, nullptr) != pdPASS) {
         myUart.send("Failed to create UART task\n");
     }
 
-    // Start FreeRTOS scheduler
     vTaskStartScheduler();
 
-    // Loop should never be reached in FreeRTOS
     for (;;);
 }
