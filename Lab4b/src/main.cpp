@@ -2,7 +2,6 @@
 #include "task.h"
 #include "queue.h"
 #include "event_groups.h"
-#include "semphr.h"
 #include "pico/stdlib.h"
 #include <stdio.h>
 #include <string.h>
